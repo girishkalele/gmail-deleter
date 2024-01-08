@@ -1,18 +1,19 @@
 package main
 
 import (
-	"log"
-	"flag"
 	"context"
-	"os"
 	"encoding/json"
-	"io/ioutil"
+	"flag"
+	"fmt"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/gmail/v1"
-	"golang.org/x/oauth2"
+	"io/ioutil"
+	"log"
 	"net/http"
-	"fmt"
+	"os"
 	"sync"
+	"time"
 
 	"gmail-deleter/internal"
 	"gmail-deleter/internal/database"
@@ -25,8 +26,8 @@ func getClient(config *oauth2.Config) *http.Client {
 	tokFile := "token.json"
 	tok, err := tokenFromFile(tokFile)
 	if err != nil {
-			tok = getTokenFromWeb(config)
-			saveToken(tokFile, tok)
+		tok = getTokenFromWeb(config)
+		saveToken(tokFile, tok)
 	}
 	return config.Client(context.Background(), tok)
 }
@@ -35,7 +36,7 @@ func getClient(config *oauth2.Config) *http.Client {
 func tokenFromFile(file string) (*oauth2.Token, error) {
 	f, err := os.Open(file)
 	if err != nil {
-			return nil, err
+		return nil, err
 	}
 	defer f.Close()
 	tok := &oauth2.Token{}
@@ -47,16 +48,16 @@ func tokenFromFile(file string) (*oauth2.Token, error) {
 func getTokenFromWeb(config *oauth2.Config) *oauth2.Token {
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
 	fmt.Printf("Go to the following link in your browser then type the "+
-			"authorization code: \n%v\n", authURL)
+		"authorization code: \n%v\n", authURL)
 
 	var authCode string
 	if _, err := fmt.Scan(&authCode); err != nil {
-			log.Fatalf("Unable to read authorization code: %v", err)
+		log.Fatalf("Unable to read authorization code: %v", err)
 	}
 
 	tok, err := config.Exchange(context.TODO(), authCode)
 	if err != nil {
-			log.Fatalf("Unable to retrieve token from web: %v", err)
+		log.Fatalf("Unable to retrieve token from web: %v", err)
 	}
 	return tok
 }
@@ -66,7 +67,7 @@ func saveToken(path string, token *oauth2.Token) {
 	fmt.Printf("Saving credential file to: %s\n", path)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
-			log.Fatalf("Unable to cache oauth token: %v", err)
+		log.Fatalf("Unable to cache oauth token: %v", err)
 	}
 	defer f.Close()
 	json.NewEncoder(f).Encode(token)
@@ -95,7 +96,7 @@ func main() {
 		log.Fatalf("Unable to read client secret file: %v", err)
 	}
 
-	 // If modifying these scopes, delete your previously saved token.json.
+	// If modifying these scopes, delete your previously saved token.json.
 	gmailConfig, err := google.ConfigFromJSON(b, gmail.GmailModifyScope)
 	if err != nil {
 		log.Fatalf("Unable to parse client secret file to config: %v", err)
@@ -109,20 +110,31 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	if (*analyze) {
+	if *analyze {
+		fmt.Println("ListThreads")
+		start := time.Now()
 		internal.ListThreads(srv, db)
-
+		fmt.Printf("Finished ListThreads - elapsed %2.2f seconds\n", start.Sub(time.Now()).Seconds())
+		fmt.Println("Starting parallel fetch emails workers")
 		wg.Add(*consumers)
 		for tid := 0; tid < *consumers; tid++ {
 			go internal.FetchEmailWorker(tid, &wg, srv, db)
 		}
-	} else if (*report) {
+	} else if *report {
 		internal.Summarize(db)
-	} else if (*toDelete != "") {
+	} else if *toDelete != "" {
+		startTime := time.Now()
+		deletionList := internal.CountRecordsNeedingDelete(db, *toDelete)
+		fmt.Printf("There are %d threads in FETCHING bucket that need to be deleted for %s\n",
+			deletionList.Count(), *toDelete)
+		deleteStartTime := time.Now()
 		wg.Add(*consumers)
 		for tid := 0; tid < *consumers; tid++ {
-			go internal.DeleteEmailWorker(tid, &wg, srv, db, *toDelete)
+			go internal.DeleteEmailWorker(tid, &wg, srv, db, *toDelete, deletionList)
 		}
+		wg.Wait()
+		fmt.Printf("Finished deletion in %3.2f seconds (total %3.2f)\n",
+			time.Now().Sub(deleteStartTime).Seconds(), time.Now().Sub(startTime).Seconds())
 	} else {
 		flag.PrintDefaults()
 		return

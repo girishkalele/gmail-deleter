@@ -1,13 +1,13 @@
 package internal
 
 import (
-	"log"
 	"fmt"
-	"sync"
+	"go.mongodb.org/mongo-driver/bson"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/googleapi"
-	"go.mongodb.org/mongo-driver/bson"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"gmail-deleter/internal/database"
@@ -34,35 +34,36 @@ func createThread(wg *sync.WaitGroup, t *gmail.Thread, db database.Database) {
 	thread.Status = "NEW"
 
 	err := db.Create(thread)
-	if (database.IsDup(err)) {
+	if database.IsDup(err) {
 		return
 	}
 
-	if (err != nil) {
+	if err != nil {
 		log.Fatal("Unable to retrieve threads: %v", err)
 	}
 }
 
-func DeleteEmailWorker(tid int, wg *sync.WaitGroup, gmail *gmail.Service, db database.Database, from string) {
+func CountRecordsNeedingDelete(db database.Database, from string) *database.ItemList {
+	return db.Count(bson.M{"status": "FETCHED", "from": from})
+}
+
+func DeleteEmailWorker(tid int, wg *sync.WaitGroup, gmail *gmail.Service, db database.Database, from string, deletionList *database.ItemList) {
 	defer wg.Done()
-	for {
+	for k := deletionList.Pop(); k != nil; k = deletionList.Pop() {
 		waitForWindow(10, db)
-
-		thread := db.FindOne(bson.M{"status": "FETCHED", "from": from}, "DELETING")
-		if (thread.Id == "") {
-			// log.Println(tid, "No threads to delete")
-			return
+		thread := db.MoveToDeleting(k)
+		if thread.Id == "" {
+			continue
 		}
-
 		_, err := gmail.Users.Threads.
 			Trash("me", thread.Id).
 			Do()
 
-		if (err == nil) {
+		if err == nil {
 			db.DeleteOne(thread.Id)
 		} else {
 			e, _ := err.(*googleapi.Error)
-			if (e.Code == 404) {
+			if e.Code == 404 {
 				db.DeleteOne(thread.Id)
 			} else {
 				log.Fatalf("Could not trash thread", e)
@@ -94,8 +95,8 @@ func waitForWindow(cost int, db database.Database) {
 		if canProcess {
 			break
 		}
-		//log.Println("waiting...")
-		time.Sleep(1 * time.Second)
+		log.Println("waiting for reserving a window...")
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -105,7 +106,7 @@ func FetchEmailWorker(tid int, wg *sync.WaitGroup, gmail *gmail.Service, db data
 		waitForWindow(10, db)
 
 		thread := db.FindOne(bson.M{"status": "NEW"}, "FETCHING_THREAD")
-		if (thread.Id == "") {
+		if thread.Id == "" {
 			// log.Println(tid, "Finished fetching")
 			return
 		}
@@ -114,7 +115,7 @@ func FetchEmailWorker(tid int, wg *sync.WaitGroup, gmail *gmail.Service, db data
 			Get("me", thread.Id).
 			Do()
 
-		if (err != nil) {
+		if err != nil {
 			log.Fatal("Unable to get gmail thread", err)
 		}
 
@@ -126,11 +127,11 @@ func FetchEmailWorker(tid int, wg *sync.WaitGroup, gmail *gmail.Service, db data
 
 		// TODO: filter out chats
 
-		for _, h := range(headers) {
-			if (strings.EqualFold(h.Name, "from")) {
+		for _, h := range headers {
+			if strings.EqualFold(h.Name, "from") {
 				thread.From = parseEmail(strings.ToLower(h.Value))
 			}
-			if (strings.EqualFold(h.Name, "to")) {
+			if strings.EqualFold(h.Name, "to") {
 				thread.To = parseEmail(strings.ToLower(h.Value))
 			}
 
@@ -155,7 +156,7 @@ func ListThreads(gmail *gmail.Service, db database.Database) {
 
 		// https://support.google.com/mail/answer/7190
 		// https://developers.google.com/gmail/api/guides/filtering
-		// -is:chat 
+		// -is:chat
 		r, err := gmail.Users.Threads.
 			List(user).
 			MaxResults(500).
@@ -174,10 +175,10 @@ func ListThreads(gmail *gmail.Service, db database.Database) {
 
 		// TODO: save this token in case we want to resume
 		nextPageToken = r.NextPageToken
-		if (nextPageToken == "") {
+		if nextPageToken == "" {
 			hasPage = false
 		}
-	} 
+	}
 
 	wg.Wait()
 }
