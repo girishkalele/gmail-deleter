@@ -209,7 +209,7 @@ func (db BoltDB) DeleteOne(tid string) {
 }
 
 func (db BoltDB) Count(criteria bson.M) *ItemList {
-	deletionList := ItemList{}
+	deletionList := ItemListFactory()
 	bucket := fmt.Sprintf("%v", criteria["status"])
 	from := fmt.Sprintf("%v", criteria["from"])
 	db.Client.View(func(tx *bolt.Tx) error {
@@ -224,7 +224,7 @@ func (db BoltDB) Count(criteria bson.M) *ItemList {
 		}
 		return nil
 	})
-	return &deletionList
+	return deletionList
 }
 
 func (db BoltDB) FindOne(criteria bson.M, newStatus string) (thread models.Thread) {

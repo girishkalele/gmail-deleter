@@ -50,7 +50,7 @@ func CountRecordsNeedingDelete(db database.Database, from string) *database.Item
 func DeleteEmailWorker(tid int, wg *sync.WaitGroup, gmail *gmail.Service, db database.Database, from string, deletionList *database.ItemList) {
 	defer wg.Done()
 	for k := deletionList.Pop(); k != nil; k = deletionList.Pop() {
-		waitForWindow(10, db)
+		waitForWindow(1, db)
 		thread := db.MoveToDeleting(k)
 		if thread.Id == "" {
 			continue
